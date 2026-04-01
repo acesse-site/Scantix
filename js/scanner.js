@@ -199,63 +199,72 @@ function closeCameraScanner() {
   cameraScanLocked = false;
 }
 
+// Aplica autofoco contínuo no track de vídeo ativo
+function applyAutofocus() {
+  const vid = document.querySelector('#camera-reader video');
+  if (!vid?.srcObject) return;
+  vid.srcObject.getVideoTracks().forEach(track => {
+    const cap = track.getCapabilities?.() || {};
+    // Suporta focusMode continuous
+    if (cap.focusMode?.includes('continuous')) {
+      track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+    }
+    // Alguns dispositivos usam torch/focusDistance — reseta para automático
+    if (cap.focusDistance) {
+      track.applyConstraints({ focusMode: 'continuous' }).catch(() => {});
+    }
+  });
+}
+
+// Callback comum de leitura
+function onScanSuccess(code, readerEl) {
+  if (cameraScanLocked) return;
+  cameraScanLocked = true;
+
+  // Feedback visual ✅
+  const feedbackEl = document.createElement('div');
+  feedbackEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,200,100,.25);z-index:10;pointer-events:none;border-radius:.5rem';
+  feedbackEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
+  readerEl.style.position = 'relative';
+  readerEl.appendChild(feedbackEl);
+
+  cameraScanTimeout = setTimeout(() => {
+    closeCameraScanner();
+    handleCameraScan(code);
+  }, 500);
+}
+
 async function startCameraScanner() {
   const readerEl = document.getElementById('camera-reader');
   readerEl.innerHTML = '<p style="color:rgba(255,255,255,.5);text-align:center;padding:3rem 1rem">Abrindo câmera...</p>';
 
+  const scanConfig = {
+    fps: 15,
+    qrbox: { width: 280, height: 120 },
+    aspectRatio: 1.7,
+  };
+
   try {
-    // Tenta abrir direto pela câmera traseira sem listar dispositivos (mais rápido)
+    // Método rápido: abre câmera traseira diretamente pelo facingMode
     html5QrCode = new Html5Qrcode('camera-reader');
-
     await html5QrCode.start(
-      { facingMode: 'environment' },   // câmera traseira direto, sem listar
-      {
-        fps: 15,                        // aumentado de 8 → 15 para leitura mais rápida
-        qrbox: { width: 280, height: 120 },
-        aspectRatio: 1.7,
-        videoConstraints: {
-          facingMode: { ideal: 'environment' },
-          focusMode: 'continuous',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
-      },
-      (code) => {
-        // Ignora leituras duplicadas em menos de 2 segundos
-        if (cameraScanLocked) return;
-        cameraScanLocked = true;
-
-        // Feedback visual antes de fechar
-        const feedbackEl = document.createElement('div');
-        feedbackEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,200,100,.25);z-index:10;pointer-events:none';
-        feedbackEl.innerHTML = '<svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
-        readerEl.style.position = 'relative';
-        readerEl.appendChild(feedbackEl);
-
-        // Espera 500ms para mostrar o feedback e depois processa
-        cameraScanTimeout = setTimeout(() => {
-          closeCameraScanner();
-          handleCameraScan(code);
-        }, 500);
-      },
-      () => {} // erro de frame, ignorar
+      { facingMode: 'environment' },
+      scanConfig,
+      (code) => onScanSuccess(code, readerEl),
+      () => {}
     );
 
-    // Aplica autofoco contínuo após câmera iniciar
-    setTimeout(() => {
-      const vid = document.querySelector('#camera-reader video');
-      if (vid?.srcObject) {
-        vid.srcObject.getVideoTracks().forEach(t => {
-          const cap = t.getCapabilities?.() || {};
-          if (cap.focusMode?.includes('continuous')) {
-            t.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
-          }
-        });
-      }
-    }, 800);
+    // Aplica autofoco logo que a câmera abre e reaplicamos a cada 2s
+    // para garantir que não trave em câmeras que resetam o foco
+    setTimeout(applyAutofocus, 600);
+    setTimeout(applyAutofocus, 1500);
+    const focusInterval = setInterval(() => {
+      if (!html5QrCode?.isScanning) { clearInterval(focusInterval); return; }
+      applyAutofocus();
+    }, 3000);
 
   } catch (e) {
-    // Fallback: tenta listar câmeras e pegar a traseira
+    // Fallback: lista dispositivos e pega o último (traseira)
     try {
       const devices = await Html5Qrcode.getCameras();
       if (!devices || devices.length === 0) throw new Error('Sem câmera');
@@ -264,14 +273,16 @@ async function startCameraScanner() {
       html5QrCode = new Html5Qrcode('camera-reader');
       await html5QrCode.start(
         backCamera.id,
-        { fps: 15, qrbox: { width: 280, height: 120 }, aspectRatio: 1.7 },
-        (code) => {
-          if (cameraScanLocked) return;
-          cameraScanLocked = true;
-          cameraScanTimeout = setTimeout(() => { closeCameraScanner(); handleCameraScan(code); }, 500);
-        },
+        scanConfig,
+        (code) => onScanSuccess(code, readerEl),
         () => {}
       );
+      setTimeout(applyAutofocus, 600);
+      setTimeout(applyAutofocus, 1500);
+      const focusInterval2 = setInterval(() => {
+        if (!html5QrCode?.isScanning) { clearInterval(focusInterval2); return; }
+        applyAutofocus();
+      }, 3000);
     } catch (e2) {
       readerEl.innerHTML = '<p style="color:#f88;text-align:center;padding:2rem">Não foi possível acessar a câmera.<br>Verifique as permissões do navegador.</p>';
     }
