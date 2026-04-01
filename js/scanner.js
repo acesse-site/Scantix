@@ -2,6 +2,8 @@
 let scannerProduct = null;
 let scannerLastPurchase = null;
 let html5QrCode = null;
+let cameraScanLocked = false;
+let cameraScanTimeout = null;
 
 function renderScanner() {
   const page = document.getElementById('page-scanner');
@@ -17,7 +19,7 @@ function renderScanner() {
       <div class="barcode-input-wrap" id="barcode-wrap">
         <svg id="barcode-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="hsl(220,80%,50%)" stroke-width="2"><path d="M3 3h5l1.5 1.5M3 3v5"/><rect x="9" y="3" width="4" height="1"/><rect x="15" y="3" width="4" height="1"/><path d="M21 3h-2"/><path d="M21 3v5"/><rect x="3" y="9" width="1" height="4"/><rect x="3" y="15" width="1" height="4"/><path d="M3 21v-2"/><path d="M3 21h5"/><rect x="9" y="21" width="4" height="1" transform="rotate(180 11 21.5)"/></svg>
         <input type="text" id="ean-input" inputmode="numeric" placeholder="Bipe ou digite o EAN..."
-          autocomplete="off" oninput="this.value=this.value.replace(/\\D/g,'')"
+          autocomplete="off" oninput="this.value=this.value.replace(/\D/g,'')"
           onkeydown="if(event.key==='Enter')triggerScan()">
         <button class="barcode-btn-camera" onclick="openCameraScanner()" title="Câmera">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
@@ -38,20 +40,13 @@ async function triggerScan() {
   input.blur();
   setScannerLoading(true);
   clearScannerResult();
-
   try {
     const [{ product }, lastPurchase] = await Promise.all([
       lookupProduct(ean),
       getLastPurchaseForEan(ean)
     ]);
-
-    if (!product) {
-      renderNotFound();
-    } else {
-      scannerProduct = product;
-      scannerLastPurchase = lastPurchase;
-      renderProductResult(product, lastPurchase);
-    }
+    if (!product) { renderNotFound(); }
+    else { scannerProduct = product; scannerLastPurchase = lastPurchase; renderProductResult(product, lastPurchase); }
   } catch (e) {
     console.error(e);
     showToast('Erro ao buscar produto', 'error');
@@ -64,9 +59,7 @@ async function triggerScan() {
 function setScannerLoading(loading) {
   const icon = document.getElementById('barcode-icon');
   if (!icon) return;
-  if (loading) {
-    icon.outerHTML = `<span class="spinner" id="barcode-icon"></span>`;
-  }
+  if (loading) icon.outerHTML = `<span class="spinner" id="barcode-icon"></span>`;
 }
 
 function clearScannerResult() {
@@ -90,14 +83,12 @@ function renderProductResult(product, lastPurchase) {
   if (!el) return;
   const lastPrice = lastPurchase?.price_paid;
   const suggestedPrice = product.price || '';
-
   el.innerHTML = `
     <div class="product-result-card">
       <div class="product-result-top">
         ${product.image_url
           ? `<img src="${product.image_url}" class="product-thumb" onerror="this.style.display='none'">`
-          : `<div class="product-thumb-placeholder"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/></svg></div>`
-        }
+          : `<div class="product-thumb-placeholder"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/></svg></div>`}
         <div class="product-info">
           <h3>${escHtml(product.name)}</h3>
           ${product.brand ? `<p class="brand">${escHtml(product.brand)}</p>` : ''}
@@ -129,7 +120,6 @@ function renderProductResult(product, lastPurchase) {
         </button>
       </div>
     </div>`;
-
   if (lastPrice) setTimeout(updatePriceDiff, 50);
 }
 
@@ -182,13 +172,11 @@ function addResultToCart() {
   setTimeout(() => document.getElementById('ean-input')?.focus(), 100);
 }
 
-// Camera scanner
-let cameraScanLocked = false;
-let cameraScanTimeout = null;
+// ===== CÂMERA =====
 
 function openCameraScanner() {
-  document.getElementById('camera-modal').classList.remove('hidden');
   cameraScanLocked = false;
+  document.getElementById('camera-modal').classList.remove('hidden');
   startCameraScanner();
 }
 
@@ -199,35 +187,36 @@ function closeCameraScanner() {
   cameraScanLocked = false;
 }
 
-// Aplica autofoco contínuo no track de vídeo ativo
+function stopCameraScanner() {
+  if (html5QrCode?.isScanning) html5QrCode.stop().catch(() => {});
+  html5QrCode = null;
+}
+
+// Aplica autofoco contínuo no vídeo ativo
 function applyAutofocus() {
   const vid = document.querySelector('#camera-reader video');
   if (!vid?.srcObject) return;
   vid.srcObject.getVideoTracks().forEach(track => {
     const cap = track.getCapabilities?.() || {};
-    // Suporta focusMode continuous
     if (cap.focusMode?.includes('continuous')) {
       track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
-    }
-    // Alguns dispositivos usam torch/focusDistance — reseta para automático
-    if (cap.focusDistance) {
-      track.applyConstraints({ focusMode: 'continuous' }).catch(() => {});
     }
   });
 }
 
-// Callback comum de leitura
+// Feedback visual + debounce ao ler código
 function onScanSuccess(code, readerEl) {
   if (cameraScanLocked) return;
   cameraScanLocked = true;
 
-  // Feedback visual ✅
+  // Flash verde de confirmação
   const feedbackEl = document.createElement('div');
-  feedbackEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,200,100,.25);z-index:10;pointer-events:none;border-radius:.5rem';
+  feedbackEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,200,100,.3);z-index:10;pointer-events:none';
   feedbackEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
   readerEl.style.position = 'relative';
   readerEl.appendChild(feedbackEl);
 
+  // 500ms de feedback antes de fechar e processar
   cameraScanTimeout = setTimeout(() => {
     closeCameraScanner();
     handleCameraScan(code);
@@ -238,60 +227,42 @@ async function startCameraScanner() {
   const readerEl = document.getElementById('camera-reader');
   readerEl.innerHTML = '<p style="color:rgba(255,255,255,.5);text-align:center;padding:3rem 1rem">Abrindo câmera...</p>';
 
-  const scanConfig = {
-    fps: 15,
-    qrbox: { width: 280, height: 120 },
-    aspectRatio: 1.7,
-  };
-
   try {
-    // Método rápido: abre câmera traseira diretamente pelo facingMode
+    // Método original que funcionava: lista dispositivos e pega câmera traseira pelo ID
+    const devices = await Html5Qrcode.getCameras();
+    if (!devices || devices.length === 0) {
+      readerEl.innerHTML = '<p style="color:#f88;text-align:center;padding:2rem">Nenhuma câmera encontrada</p>';
+      return;
+    }
+
+    const backCamera = devices[devices.length - 1];
     html5QrCode = new Html5Qrcode('camera-reader');
+
     await html5QrCode.start(
-      { facingMode: 'environment' },
-      scanConfig,
+      backCamera.id,
+      {
+        fps: 15,
+        qrbox: { width: 280, height: 120 },
+        aspectRatio: 1.7,
+        videoConstraints: {
+          deviceId: { exact: backCamera.id },
+          focusMode: 'continuous'
+        }
+      },
       (code) => onScanSuccess(code, readerEl),
       () => {}
     );
 
-    // Aplica autofoco logo que a câmera abre e reaplicamos a cada 2s
-    // para garantir que não trave em câmeras que resetam o foco
-    setTimeout(applyAutofocus, 600);
-    setTimeout(applyAutofocus, 1500);
+    // Reforça autofoco após 1s e a cada 3s (garante que não trava)
+    setTimeout(applyAutofocus, 1000);
     const focusInterval = setInterval(() => {
       if (!html5QrCode?.isScanning) { clearInterval(focusInterval); return; }
       applyAutofocus();
     }, 3000);
 
   } catch (e) {
-    // Fallback: lista dispositivos e pega o último (traseira)
-    try {
-      const devices = await Html5Qrcode.getCameras();
-      if (!devices || devices.length === 0) throw new Error('Sem câmera');
-      const backCamera = devices[devices.length - 1];
-      if (html5QrCode?.isScanning) await html5QrCode.stop();
-      html5QrCode = new Html5Qrcode('camera-reader');
-      await html5QrCode.start(
-        backCamera.id,
-        scanConfig,
-        (code) => onScanSuccess(code, readerEl),
-        () => {}
-      );
-      setTimeout(applyAutofocus, 600);
-      setTimeout(applyAutofocus, 1500);
-      const focusInterval2 = setInterval(() => {
-        if (!html5QrCode?.isScanning) { clearInterval(focusInterval2); return; }
-        applyAutofocus();
-      }, 3000);
-    } catch (e2) {
-      readerEl.innerHTML = '<p style="color:#f88;text-align:center;padding:2rem">Não foi possível acessar a câmera.<br>Verifique as permissões do navegador.</p>';
-    }
+    readerEl.innerHTML = '<p style="color:#f88;text-align:center;padding:2rem">Não foi possível acessar a câmera.<br>Verifique as permissões do navegador.</p>';
   }
-}
-
-function stopCameraScanner() {
-  if (html5QrCode?.isScanning) html5QrCode.stop().catch(() => {});
-  html5QrCode = null;
 }
 
 function handleCameraScan(code) {
