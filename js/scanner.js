@@ -183,33 +183,65 @@ function addResultToCart() {
 }
 
 // Camera scanner
+let cameraScanLocked = false;
+let cameraScanTimeout = null;
+
 function openCameraScanner() {
   document.getElementById('camera-modal').classList.remove('hidden');
+  cameraScanLocked = false;
   startCameraScanner();
 }
 
 function closeCameraScanner() {
   document.getElementById('camera-modal').classList.add('hidden');
   stopCameraScanner();
+  if (cameraScanTimeout) { clearTimeout(cameraScanTimeout); cameraScanTimeout = null; }
+  cameraScanLocked = false;
 }
 
 async function startCameraScanner() {
   const readerEl = document.getElementById('camera-reader');
-  readerEl.innerHTML = '';
+  readerEl.innerHTML = '<p style="color:rgba(255,255,255,.5);text-align:center;padding:3rem 1rem">Abrindo câmera...</p>';
+
   try {
-    const devices = await Html5Qrcode.getCameras();
-    if (!devices || devices.length === 0) {
-      readerEl.innerHTML = '<p style="color:#f88;text-align:center;padding:2rem">Nenhuma câmera encontrada</p>';
-      return;
-    }
-    const backCamera = devices[devices.length - 1];
+    // Tenta abrir direto pela câmera traseira sem listar dispositivos (mais rápido)
     html5QrCode = new Html5Qrcode('camera-reader');
+
     await html5QrCode.start(
-      backCamera.id,
-      { fps: 8, qrbox: { width: 280, height: 120 }, aspectRatio: 1.7 },
-      (code) => { closeCameraScanner(); handleCameraScan(code); },
-      () => {}
+      { facingMode: 'environment' },   // câmera traseira direto, sem listar
+      {
+        fps: 15,                        // aumentado de 8 → 15 para leitura mais rápida
+        qrbox: { width: 280, height: 120 },
+        aspectRatio: 1.7,
+        videoConstraints: {
+          facingMode: { ideal: 'environment' },
+          focusMode: 'continuous',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
+      },
+      (code) => {
+        // Ignora leituras duplicadas em menos de 2 segundos
+        if (cameraScanLocked) return;
+        cameraScanLocked = true;
+
+        // Feedback visual antes de fechar
+        const feedbackEl = document.createElement('div');
+        feedbackEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,200,100,.25);z-index:10;pointer-events:none';
+        feedbackEl.innerHTML = '<svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
+        readerEl.style.position = 'relative';
+        readerEl.appendChild(feedbackEl);
+
+        // Espera 500ms para mostrar o feedback e depois processa
+        cameraScanTimeout = setTimeout(() => {
+          closeCameraScanner();
+          handleCameraScan(code);
+        }, 500);
+      },
+      () => {} // erro de frame, ignorar
     );
+
+    // Aplica autofoco contínuo após câmera iniciar
     setTimeout(() => {
       const vid = document.querySelector('#camera-reader video');
       if (vid?.srcObject) {
@@ -220,9 +252,29 @@ async function startCameraScanner() {
           }
         });
       }
-    }, 1000);
+    }, 800);
+
   } catch (e) {
-    readerEl.innerHTML = '<p style="color:#f88;text-align:center;padding:2rem">Não foi possível acessar a câmera. Verifique as permissões.</p>';
+    // Fallback: tenta listar câmeras e pegar a traseira
+    try {
+      const devices = await Html5Qrcode.getCameras();
+      if (!devices || devices.length === 0) throw new Error('Sem câmera');
+      const backCamera = devices[devices.length - 1];
+      if (html5QrCode?.isScanning) await html5QrCode.stop();
+      html5QrCode = new Html5Qrcode('camera-reader');
+      await html5QrCode.start(
+        backCamera.id,
+        { fps: 15, qrbox: { width: 280, height: 120 }, aspectRatio: 1.7 },
+        (code) => {
+          if (cameraScanLocked) return;
+          cameraScanLocked = true;
+          cameraScanTimeout = setTimeout(() => { closeCameraScanner(); handleCameraScan(code); }, 500);
+        },
+        () => {}
+      );
+    } catch (e2) {
+      readerEl.innerHTML = '<p style="color:#f88;text-align:center;padding:2rem">Não foi possível acessar a câmera.<br>Verifique as permissões do navegador.</p>';
+    }
   }
 }
 
